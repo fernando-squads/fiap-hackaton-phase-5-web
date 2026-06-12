@@ -3,25 +3,31 @@ export type GraphNode = {
   label?: string;
   name?: string;
   type?: string;
+  node_type?: string;
   confidence?: number;
   zone?: string;
   trust_boundary?: string;
+  trust_boundary_id?: string | null;
   metadata?: Record<string, unknown>;
+  attributes?: Record<string, unknown>;
 };
 
 export type GraphEdge = {
   id?: string;
   source?: string;
   target?: string;
+  source_node_id?: string;
+  target_node_id?: string;
   label?: string;
   protocol?: string;
+  edge_type?: string;
 };
 
 export type ArchitectureGraph = {
   nodes?: GraphNode[];
   edges?: GraphEdge[];
   relationships?: GraphEdge[];
-  trust_boundaries?: Array<{ id?: string; name?: string; zone?: string }>;
+  trust_boundaries?: Array<{ id?: string; name?: string; zone?: string; node_ids?: string[] }>;
 };
 
 export type Threat = {

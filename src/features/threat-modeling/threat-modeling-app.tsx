@@ -39,7 +39,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs } from "@/components/ui/tabs";
-import { analyzeArchitecture, AnalysisResponse, GraphNode, sampleAnalysis, Threat } from "@/lib/threat-modeling";
+import { analyzeArchitecture, AnalysisResponse, GraphEdge, GraphNode, sampleAnalysis, Threat } from "@/lib/threat-modeling";
 import { cn, formatBytes } from "@/lib/utils";
 
 const loadingMessages = [
@@ -83,7 +83,46 @@ function percent(value?: number) {
 }
 
 function getNodeLabel(node: GraphNode) {
-  return node.label ?? node.name ?? node.id ?? "Component";
+  return node.label ?? node.name ?? stringAttribute(node, "name") ?? stringAttribute(node, "component") ?? node.id ?? "Component";
+}
+
+function stringAttribute(node: GraphNode, key: string) {
+  const value = node.attributes?.[key] ?? node.metadata?.[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function getNodeType(node: GraphNode) {
+  return node.type ?? node.node_type ?? stringAttribute(node, "type") ?? "unknown";
+}
+
+function getBoundaryName(graph: AnalysisResponse["graph"], node: GraphNode) {
+  const boundaries = graph?.trust_boundaries ?? [];
+  const directBoundary = boundaries.find((boundary) => boundary.id && boundary.id === node.trust_boundary_id);
+  const containingBoundary = boundaries.find((boundary) => node.id && boundary.node_ids?.includes(node.id));
+
+  return (
+    node.zone ??
+    node.trust_boundary ??
+    stringAttribute(node, "zone") ??
+    stringAttribute(node, "trust_boundary") ??
+    directBoundary?.name ??
+    directBoundary?.zone ??
+    containingBoundary?.name ??
+    containingBoundary?.zone ??
+    "Unknown Zone"
+  );
+}
+
+function getEdgeSource(edge: GraphEdge) {
+  return edge?.source ?? edge?.source_node_id ?? "";
+}
+
+function getEdgeTarget(edge: GraphEdge) {
+  return edge?.target ?? edge?.target_node_id ?? "";
+}
+
+function getEdgeLabel(edge: GraphEdge) {
+  return edge?.label ?? edge?.protocol ?? edge?.edge_type;
 }
 
 function normalizeList(value?: string[] | string) {
@@ -356,7 +395,7 @@ function Dashboard({ analysis, onReset, error }: { analysis: AnalysisResponse; o
         <ArchitectureGraph graph={analysis.graph} />
         <SecurityInsights analysis={analysis} postureLabel={posture(architectureScore, riskScore)} />
       </div>
-      <DetectedComponents nodes={analysis.graph?.nodes ?? []} />
+      <DetectedComponents nodes={analysis.graph?.nodes ?? []} graph={analysis.graph} />
       <ThreatTabs threats={analysis.threats ?? []} candidates={analysis.candidate_threats ?? []} />
       <div className="grid gap-6 xl:grid-cols-2">
         <Mitigations items={analysis.mitigations ?? []} />
@@ -434,9 +473,9 @@ function ArchitectureGraph({ graph }: { graph?: AnalysisResponse["graph"] }) {
       nodes: nodes.map((node, index): Node => ({
         id: node.id ?? `node-${index}`,
         position: { x: 70 + (index % 3) * 230, y: 80 + Math.floor(index / 3) * 150 },
-        data: { label: `${getNodeLabel(node)}\n${node.zone ?? "Unknown Zone"}` },
+        data: { label: `${getNodeLabel(node)}\n${getBoundaryName(graph, node)}` },
         style: {
-          background: nodePalette[(node.type ?? "").toLowerCase()] ?? "#334155",
+          background: nodePalette[getNodeType(node).toLowerCase()] ?? "#334155",
           border: "1px solid rgba(255,255,255,0.3)",
           color: "white",
           borderRadius: 8,
@@ -447,9 +486,9 @@ function ArchitectureGraph({ graph }: { graph?: AnalysisResponse["graph"] }) {
       })),
       edges: edges.map((edge, index): Edge => ({
         id: edge.id ?? `edge-${index}`,
-        source: edge.source ?? "",
-        target: edge.target ?? "",
-        label: edge.label ?? edge.protocol,
+        source: getEdgeSource(edge),
+        target: getEdgeTarget(edge),
+        label: getEdgeLabel(edge),
         animated: true,
         markerEnd: { type: MarkerType.ArrowClosed, color: "#00D4FF" },
         style: { stroke: "#00D4FF" },
@@ -505,7 +544,10 @@ function SecurityInsights({ analysis, postureLabel }: { analysis: AnalysisRespon
   );
 }
 
-function DetectedComponents({ nodes }: { nodes: GraphNode[] }) {
+function DetectedComponents({ nodes, graph }: { nodes: GraphNode[]; graph?: AnalysisResponse["graph"] }) {
+  const displayGraph = graph ?? sampleAnalysis.graph;
+  const displayNodes = nodes.length ? nodes : displayGraph?.nodes ?? [];
+
   return (
     <Card>
       <CardHeader>
@@ -522,12 +564,12 @@ function DetectedComponents({ nodes }: { nodes: GraphNode[] }) {
             </tr>
           </thead>
           <tbody>
-            {(nodes.length ? nodes : sampleAnalysis.graph?.nodes ?? []).map((node, index) => (
+            {displayNodes.map((node, index) => (
               <tr key={node.id ?? index} className="border-b border-white/5">
                 <td className="py-4 font-medium text-white">{getNodeLabel(node)}</td>
-                <td className="py-4"><Badge tone="purple">{node.type ?? "unknown"}</Badge></td>
+                <td className="py-4"><Badge tone="purple">{getNodeType(node)}</Badge></td>
                 <td className="py-4 text-slate-300">{percent(node.confidence)}%</td>
-                <td className="py-4 text-slate-300">{node.zone ?? node.trust_boundary ?? "Unknown Zone"}</td>
+                <td className="py-4 text-slate-300">{getBoundaryName(displayGraph, node)}</td>
               </tr>
             ))}
           </tbody>
