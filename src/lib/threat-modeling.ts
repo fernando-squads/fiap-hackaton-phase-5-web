@@ -9,7 +9,16 @@ export type GraphNode = {
   trust_boundary?: string;
   trust_boundary_id?: string | null;
   metadata?: Record<string, unknown>;
-  attributes?: Record<string, unknown>;
+  attributes?: Record<string, unknown> & {
+    confidence?: number;
+    semantic_confidence?: number;
+    semantic_enrichment?: {
+      canonical_component?: string;
+      detector_confidence?: number;
+      semantic_final_confidence?: number;
+      state?: string;
+    };
+  };
 };
 
 export type GraphEdge = {
@@ -39,9 +48,12 @@ export type Threat = {
   severity?: string;
   confidence?: number;
   candidate_reason?: string;
+  confidence_level?: string;
   reason?: string;
   evidence?: unknown;
   description?: string;
+  mitigations?: Mitigation[];
+  status?: string;
 };
 
 export type Mitigation = {
@@ -49,8 +61,10 @@ export type Mitigation = {
   title?: string;
   description?: string;
   priority?: string;
+  status?: string;
   owner?: string;
   due_date?: string;
+  references?: string[] | string;
 };
 
 export type Recommendation = {
@@ -73,6 +87,7 @@ export type AnalysisResponse = {
   };
   mitigations?: Mitigation[];
   recommendations?: Recommendation[];
+  optional_recommendations?: Recommendation[];
   architecture_score?: number;
   risk_score?: number;
 };

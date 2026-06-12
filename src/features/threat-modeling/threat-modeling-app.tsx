@@ -39,7 +39,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs } from "@/components/ui/tabs";
-import { analyzeArchitecture, AnalysisResponse, GraphEdge, GraphNode, sampleAnalysis, Threat } from "@/lib/threat-modeling";
+import { analyzeArchitecture, AnalysisResponse, GraphEdge, GraphNode, Threat } from "@/lib/threat-modeling";
 import { cn, formatBytes } from "@/lib/utils";
 
 const loadingMessages = [
@@ -77,13 +77,56 @@ function posture(architectureScore: number, riskScore: number) {
   return "Critical";
 }
 
+function candidateSeverityPenalty(severity?: string) {
+  switch (severity?.toLowerCase()) {
+    case "critical":
+      return 40;
+    case "high":
+      return 30;
+    case "medium":
+      return 18;
+    case "low":
+      return 8;
+    default:
+      return 12;
+  }
+}
+
+function adjustedArchitectureScore(analysis: AnalysisResponse) {
+  const baseScore = analysis.architecture_score ?? 0;
+  const candidatePenalty = (analysis.candidate_threats ?? []).reduce((total, threat) => {
+    const confidence = threat.confidence === undefined ? 0.5 : Math.max(threat.confidence, 0.5);
+    return total + candidateSeverityPenalty(threat.severity) * confidence;
+  }, 0);
+
+  return Math.max(0, Math.round(baseScore - candidatePenalty));
+}
+
+function adjustedRiskScore(analysis: AnalysisResponse) {
+  const baseScore = analysis.risk_score ?? 0;
+  const candidateRisk = (analysis.candidate_threats ?? []).reduce((total, threat) => {
+    const confidence = threat.confidence === undefined ? 0.5 : Math.max(threat.confidence, 0.5);
+    return total + candidateSeverityPenalty(threat.severity) * confidence;
+  }, 0);
+
+  return Math.min(100, Math.round(baseScore + candidateRisk));
+}
+
 function percent(value?: number) {
   if (value === undefined) return 0;
   return value <= 1 ? Math.round(value * 100) : Math.round(value);
 }
 
+function confidenceLabel(value?: number) {
+  return value === undefined ? "N/A" : `${percent(value)}%`;
+}
+
 function getNodeLabel(node: GraphNode) {
-  return node.label ?? node.name ?? stringAttribute(node, "name") ?? stringAttribute(node, "component") ?? node.id ?? "Component";
+  const enrichedLabel = node.attributes?.semantic_enrichment?.canonical_component;
+  const explicitLabel = node.label ?? node.name ?? stringAttribute(node, "name") ?? stringAttribute(node, "component");
+  const isGenericLabel = !explicitLabel || ["service", "component", "external"].includes(explicitLabel.toLowerCase());
+
+  return (isGenericLabel ? enrichedLabel : explicitLabel) ?? explicitLabel ?? node.id ?? "Component";
 }
 
 function stringAttribute(node: GraphNode, key: string) {
@@ -93,6 +136,16 @@ function stringAttribute(node: GraphNode, key: string) {
 
 function getNodeType(node: GraphNode) {
   return node.type ?? node.node_type ?? stringAttribute(node, "type") ?? "unknown";
+}
+
+function getNodeConfidence(node: GraphNode) {
+  return (
+    node.confidence ??
+    node.attributes?.confidence ??
+    node.attributes?.semantic_enrichment?.detector_confidence ??
+    node.attributes?.semantic_enrichment?.semantic_final_confidence ??
+    node.attributes?.semantic_confidence
+  );
 }
 
 function getBoundaryName(graph: AnalysisResponse["graph"], node: GraphNode) {
@@ -128,6 +181,11 @@ function getEdgeLabel(edge: GraphEdge) {
 function normalizeList(value?: string[] | string) {
   if (!value) return [];
   return Array.isArray(value) ? value : [value];
+}
+
+function getAnalysisMitigations(analysis: AnalysisResponse) {
+  const nestedMitigations = [...(analysis.threats ?? []), ...(analysis.candidate_threats ?? [])].flatMap((threat) => threat.mitigations ?? []);
+  return [...(analysis.mitigations ?? []), ...nestedMitigations];
 }
 
 export function ThreatModelingApp() {
@@ -178,7 +236,6 @@ export function ThreatModelingApp() {
       setProgress(100);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to analyze this diagram.");
-      setAnalysis(sampleAnalysis);
     } finally {
       window.clearInterval(interval);
       setTimeout(() => setIsLoading(false), 350);
@@ -216,7 +273,7 @@ export function ThreatModelingApp() {
           ) : isLoading ? (
             <LoadingScreen progress={progress} message={loadingMessages[messageIndex]} />
           ) : analysis ? (
-            <Dashboard analysis={analysis} onReset={() => setAnalysis(null)} error={error} />
+            <Dashboard analysis={analysis} onReset={() => setAnalysis(null)} />
           ) : null}
         </AnimatePresence>
       </section>
@@ -373,9 +430,9 @@ function LoadingScreen({ progress, message }: { progress: number; message: strin
   );
 }
 
-function Dashboard({ analysis, onReset, error }: { analysis: AnalysisResponse; onReset: () => void; error: string | null }) {
-  const architectureScore = analysis.architecture_score ?? 0;
-  const riskScore = analysis.risk_score ?? 0;
+function Dashboard({ analysis, onReset }: { analysis: AnalysisResponse; onReset: () => void }) {
+  const architectureScore = adjustedArchitectureScore(analysis);
+  const riskScore = adjustedRiskScore(analysis);
   const threatSummary = analysis.threat_summary ?? {};
 
   return (
@@ -389,7 +446,6 @@ function Dashboard({ analysis, onReset, error }: { analysis: AnalysisResponse; o
           <FileImage className="h-4 w-4" /> New Analysis
         </Button>
       </div>
-      {error ? <p className="rounded-lg border border-amber-300/20 bg-amber-300/10 p-3 text-sm text-amber-100">Live API unavailable, showing representative dashboard data. {error}</p> : null}
       <KpiGrid architectureScore={architectureScore} riskScore={riskScore} threatSummary={threatSummary} />
       <div className="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]">
         <ArchitectureGraph graph={analysis.graph} />
@@ -398,10 +454,10 @@ function Dashboard({ analysis, onReset, error }: { analysis: AnalysisResponse; o
       <DetectedComponents nodes={analysis.graph?.nodes ?? []} graph={analysis.graph} />
       <ThreatTabs threats={analysis.threats ?? []} candidates={analysis.candidate_threats ?? []} />
       <div className="grid gap-6 xl:grid-cols-2">
-        <Mitigations items={analysis.mitigations ?? []} />
+        <Mitigations items={getAnalysisMitigations(analysis)} />
         <Recommendations items={analysis.recommendations ?? []} />
       </div>
-      <RawJson analysis={analysis} />
+      <RawJson analysis={analysis} architectureScore={architectureScore} riskScore={riskScore} />
     </motion.div>
   );
 }
@@ -415,7 +471,7 @@ function KpiGrid({ architectureScore, riskScore, threatSummary }: { architecture
   const tone = scoreTone(architectureScore);
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-      <KpiCard icon={ShieldCheck} title="Architecture Score" value={`${architectureScore} / 100`} tone={tone} subtitle="Security design quality" />
+      <KpiCard icon={ShieldCheck} title="Architecture Score" value={`${architectureScore} / 100`} tone={tone} subtitle="Adjusted for candidate findings" />
       <KpiCard icon={AlertTriangle} title="Risk Score" value={String(riskScore)} tone={riskScore > 60 ? "red" : riskScore > 30 ? "orange" : "green"} subtitle={riskScore > 60 ? "High severity" : riskScore > 30 ? "Elevated" : "Low exposure"} />
       <Card>
         <CardContent>
@@ -467,8 +523,8 @@ function KpiCard({ icon: Icon, title, value, subtitle, tone }: { icon: typeof Sh
 
 function ArchitectureGraph({ graph }: { graph?: AnalysisResponse["graph"] }) {
   const initial = useMemo(() => {
-    const nodes = graph?.nodes?.length ? graph.nodes : sampleAnalysis.graph?.nodes ?? [];
-    const edges = graph?.edges ?? graph?.relationships ?? sampleAnalysis.graph?.edges ?? [];
+    const nodes = graph?.nodes ?? [];
+    const edges = graph?.edges ?? graph?.relationships ?? [];
     return {
       nodes: nodes.map((node, index): Node => ({
         id: node.id ?? `node-${index}`,
@@ -545,8 +601,7 @@ function SecurityInsights({ analysis, postureLabel }: { analysis: AnalysisRespon
 }
 
 function DetectedComponents({ nodes, graph }: { nodes: GraphNode[]; graph?: AnalysisResponse["graph"] }) {
-  const displayGraph = graph ?? sampleAnalysis.graph;
-  const displayNodes = nodes.length ? nodes : displayGraph?.nodes ?? [];
+  const displayNodes = nodes;
 
   return (
     <Card>
@@ -564,14 +619,18 @@ function DetectedComponents({ nodes, graph }: { nodes: GraphNode[]; graph?: Anal
             </tr>
           </thead>
           <tbody>
-            {displayNodes.map((node, index) => (
+            {displayNodes.length ? displayNodes.map((node, index) => (
               <tr key={node.id ?? index} className="border-b border-white/5">
                 <td className="py-4 font-medium text-white">{getNodeLabel(node)}</td>
                 <td className="py-4"><Badge tone="purple">{getNodeType(node)}</Badge></td>
-                <td className="py-4 text-slate-300">{percent(node.confidence)}%</td>
-                <td className="py-4 text-slate-300">{getBoundaryName(displayGraph, node)}</td>
+                <td className="py-4 text-slate-300">{confidenceLabel(getNodeConfidence(node))}</td>
+                <td className="py-4 text-slate-300">{getBoundaryName(graph, node)}</td>
               </tr>
-            ))}
+            )) : (
+              <tr>
+                <td colSpan={4} className="py-6 text-slate-400">No components returned by the API.</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </CardContent>
@@ -596,7 +655,7 @@ function ThreatTabs({ threats, candidates }: { threats: Threat[]; candidates: Th
             {
               value: "candidates",
               label: `Candidate Threats (${candidates.length})`,
-              content: <ThreatCards threats={candidates.length ? candidates : sampleAnalysis.candidate_threats ?? []} />,
+              content: candidates.length ? <ThreatCards threats={candidates} /> : <EmptyPanel title="No candidate threats returned." description="The API response did not include candidate findings for this run." />,
             },
           ]}
         />
@@ -611,6 +670,15 @@ function EmptySuccess() {
       <CheckCircle2 className="mb-3 h-6 w-6 text-emerald-300" />
       <p className="font-semibold text-emerald-100">No confirmed threats detected.</p>
       <p className="mt-1 text-sm text-emerald-100/75">Continue validating candidate findings and trust-boundary assumptions.</p>
+    </div>
+  );
+}
+
+function EmptyPanel({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.04] p-5">
+      <p className="font-semibold text-white">{title}</p>
+      <p className="mt-1 text-sm text-slate-400">{description}</p>
     </div>
   );
 }
@@ -630,7 +698,8 @@ function ThreatCards({ threats }: { threats: Threat[] }) {
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <Badge tone="cyan">{threat.stride_category ?? threat.category ?? "STRIDE"}</Badge>
-              <Badge tone="slate">{percent(threat.confidence)}% confidence</Badge>
+              <Badge tone="slate">{confidenceLabel(threat.confidence)} confidence</Badge>
+              {threat.confidence_level ? <Badge tone="slate">{threat.confidence_level}</Badge> : null}
             </div>
           </summary>
           <pre className="mt-4 max-h-56 overflow-auto rounded-lg bg-black/30 p-3 text-xs text-slate-300">{JSON.stringify(threat.evidence ?? threat, null, 2)}</pre>
@@ -647,7 +716,7 @@ function Mitigations({ items }: { items: AnalysisResponse["mitigations"] }) {
         <CardTitle>Mitigations</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {(items?.length ? items : sampleAnalysis.mitigations ?? []).map((item) => (
+        {items?.length ? items.map((item) => (
           <div key={item.id ?? item.title} className="rounded-lg border border-white/10 bg-white/[0.04] p-4">
             <div className="flex items-start justify-between gap-3">
               <p className="font-semibold text-white">{item.title}</p>
@@ -655,18 +724,20 @@ function Mitigations({ items }: { items: AnalysisResponse["mitigations"] }) {
             </div>
             <p className="mt-2 text-sm leading-6 text-slate-300">{item.description}</p>
             <div className="mt-4 flex flex-wrap gap-2 text-xs text-slate-400">
-              <span>Owner: {item.owner ?? "Security"}</span>
-              <span>Due: {item.due_date ?? "TBD"}</span>
+              {item.status ? <span>Status: {item.status}</span> : null}
+              {item.owner ? <span>Owner: {item.owner}</span> : null}
+              {item.due_date ? <span>Due: {item.due_date}</span> : null}
+              {normalizeList(item.references).length ? <span>{normalizeList(item.references).join(" | ")}</span> : null}
             </div>
           </div>
-        ))}
+        )) : <EmptyPanel title="No mitigations returned." description="The API response did not include top-level or threat-level mitigations." />}
       </CardContent>
     </Card>
   );
 }
 
 function Recommendations({ items }: { items: AnalysisResponse["recommendations"] }) {
-  const grouped = (items?.length ? items : sampleAnalysis.recommendations ?? []).reduce<Record<string, NonNullable<AnalysisResponse["recommendations"]>>>((acc, item) => {
+  const grouped = (items ?? []).reduce<Record<string, NonNullable<AnalysisResponse["recommendations"]>>>((acc, item) => {
     const category = item.category ?? "General";
     acc[category] = [...(acc[category] ?? []), item];
     return acc;
@@ -677,7 +748,7 @@ function Recommendations({ items }: { items: AnalysisResponse["recommendations"]
         <CardTitle>Recommendations</CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
-        {Object.entries(grouped).map(([category, recs]) => (
+        {Object.entries(grouped).length ? Object.entries(grouped).map(([category, recs]) => (
           <section key={category}>
             <Badge tone="cyan">{category}</Badge>
             <div className="mt-3 space-y-3">
@@ -692,13 +763,13 @@ function Recommendations({ items }: { items: AnalysisResponse["recommendations"]
               ))}
             </div>
           </section>
-        ))}
+        )) : <EmptyPanel title="No recommendations returned." description="The API response did not include recommendations for this run." />}
       </CardContent>
     </Card>
   );
 }
 
-function RawJson({ analysis }: { analysis: AnalysisResponse }) {
+function RawJson({ analysis, architectureScore, riskScore }: { analysis: AnalysisResponse; architectureScore: number; riskScore: number }) {
   const json = JSON.stringify(analysis, null, 2);
   function download() {
     const blob = new Blob([json], { type: "application/json" });
@@ -740,7 +811,7 @@ function RawJson({ analysis }: { analysis: AnalysisResponse }) {
               content: (
                 <div className="h-72">
                   <ResponsiveContainer>
-                    <BarChart data={[{ name: "Architecture", value: analysis.architecture_score ?? 0 }, { name: "Risk", value: analysis.risk_score ?? 0 }]}>
+                    <BarChart data={[{ name: "Architecture", value: architectureScore }, { name: "Risk", value: riskScore }]}>
                       <CartesianGrid stroke="rgba(255,255,255,0.08)" />
                       <XAxis dataKey="name" stroke="#94a3b8" />
                       <YAxis stroke="#94a3b8" />
