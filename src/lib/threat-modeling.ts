@@ -71,7 +71,7 @@ export type AnalysisResponse = {
   risk_score?: number;
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 
 export async function analyzeArchitecture(file: File): Promise<AnalysisResponse> {
   const formData = new FormData();

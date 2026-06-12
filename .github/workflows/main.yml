@@ -1,0 +1,45 @@
+name: CI
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy-prd:
+    name: Deploy - PRD
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.ref == 'refs/heads/master'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Writing .env file
+        run: 'echo "${{ secrets.ENVIRONMENT_VARIABLES }}" > .env'
+      
+      - name: Install dependencies
+        run: yarn
+
+      - name: Updating the caniuse-lite database with browsers
+        run: npx browserslist@4.24.3 --update-db
+
+      - name: Build app
+        run: yarn build
+        env:
+          CI: ''
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Deploy to S3
+        run: aws s3 sync . s3://fiap-tech-challenge-phase-4/
+        working-directory: ./build
